@@ -164,7 +164,6 @@ ngx_ssl_init(ngx_log_t *log)
 
 #endif
 
-#if OPENSSL_VERSION_NUMBER >= 0x0090800fL
 #ifndef SSL_OP_NO_COMPRESSION
     {
     /*
@@ -181,7 +180,6 @@ ngx_ssl_init(ngx_log_t *log)
         (void) sk_SSL_COMP_pop(ssl_comp_methods);
     }
     }
-#endif
 #endif
 
     ngx_ssl_connection_index = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
@@ -615,23 +613,29 @@ ngx_ssl_load_certificate(ngx_pool_t *pool, char **err, ngx_str_t *cert,
     X509    *x509, *temp;
     u_long   n;
 
-    if (ngx_get_full_name(pool, (ngx_str_t *) &ngx_cycle->conf_prefix, cert)
-        != NGX_OK)
-    {
-        *err = NULL;
-        return NULL;
-    }
+    if (ngx_strncmp(cert->data, "data:", sizeof("data:") - 1) == 0) {
 
-    /*
-     * we can't use SSL_CTX_use_certificate_chain_file() as it doesn't
-     * allow to access certificate later from SSL_CTX, so we reimplement
-     * it here
-     */
+        bio = BIO_new_mem_buf(cert->data + sizeof("data:") - 1,
+                              cert->len - (sizeof("data:") - 1));
+        if (bio == NULL) {
+            *err = "BIO_new_mem_buf() failed";
+            return NULL;
+        }
 
-    bio = BIO_new_file((char *) cert->data, "r");
-    if (bio == NULL) {
-        *err = "BIO_new_file() failed";
-        return NULL;
+    } else {
+
+        if (ngx_get_full_name(pool, (ngx_str_t *) &ngx_cycle->conf_prefix, cert)
+            != NGX_OK)
+        {
+            *err = NULL;
+            return NULL;
+        }
+
+        bio = BIO_new_file((char *) cert->data, "r");
+        if (bio == NULL) {
+            *err = "BIO_new_file() failed";
+            return NULL;
+        }
     }
 
     /* certificate itself */
@@ -705,9 +709,8 @@ ngx_ssl_load_certificate_key(ngx_pool_t *pool, char **err,
 
 #ifndef OPENSSL_NO_ENGINE
 
-        u_char      *p, *last;
-        ENGINE      *engine;
-        EVP_PKEY    *pkey;
+        u_char  *p, *last;
+        ENGINE  *engine;
 
         p = key->data + sizeof("engine:") - 1;
         last = (u_char *) ngx_strchr(p, ':');
@@ -748,17 +751,29 @@ ngx_ssl_load_certificate_key(ngx_pool_t *pool, char **err,
 #endif
     }
 
-    if (ngx_get_full_name(pool, (ngx_str_t *) &ngx_cycle->conf_prefix, key)
-        != NGX_OK)
-    {
-        *err = NULL;
-        return NULL;
-    }
+    if (ngx_strncmp(key->data, "data:", sizeof("data:") - 1) == 0) {
 
-    bio = BIO_new_file((char *) key->data, "r");
-    if (bio == NULL) {
-        *err = "BIO_new_file() failed";
-        return NULL;
+        bio = BIO_new_mem_buf(key->data + sizeof("data:") - 1,
+                              key->len - (sizeof("data:") - 1));
+        if (bio == NULL) {
+            *err = "BIO_new_mem_buf() failed";
+            return NULL;
+        }
+
+    } else {
+
+        if (ngx_get_full_name(pool, (ngx_str_t *) &ngx_cycle->conf_prefix, key)
+            != NGX_OK)
+        {
+            *err = NULL;
+            return NULL;
+        }
+
+        bio = BIO_new_file((char *) key->data, "r");
+        if (bio == NULL) {
+            *err = "BIO_new_file() failed";
+            return NULL;
+        }
     }
 
     if (passwords) {
@@ -890,13 +905,6 @@ ngx_ssl_client_certificate(ngx_conf_t *cf, ngx_ssl_t *ssl, ngx_str_t *cert,
                       "SSL_load_client_CA_file(\"%s\") failed", cert->data);
         return NGX_ERROR;
     }
-
-    /*
-     * before 0.9.7h and 0.9.8 SSL_load_client_CA_file()
-     * always leaved an error in the error queue
-     */
-
-    ERR_clear_error();
 
     SSL_CTX_set_client_CA_list(ssl->ctx, list);
 
@@ -1063,8 +1071,8 @@ ngx_ssl_info_callback(const ngx_ssl_conn_t *ssl_conn, int where, int ret)
              * added to wbio, and set buffer size.
              */
 
-            rbio = SSL_get_rbio((ngx_ssl_conn_t *) ssl_conn);
-            wbio = SSL_get_wbio((ngx_ssl_conn_t *) ssl_conn);
+            rbio = SSL_get_rbio(ssl_conn);
+            wbio = SSL_get_wbio(ssl_conn);
 
             if (rbio != wbio) {
                 (void) BIO_set_write_buffer_size(wbio, NGX_SSL_BUFSIZE);
@@ -1347,7 +1355,6 @@ ngx_ssl_dhparam(ngx_conf_t *cf, ngx_ssl_t *ssl, ngx_str_t *file)
 ngx_int_t
 ngx_ssl_ecdh_curve(ngx_conf_t *cf, ngx_ssl_t *ssl, ngx_str_t *name)
 {
-#if OPENSSL_VERSION_NUMBER >= 0x0090800fL
 #ifndef OPENSSL_NO_ECDH
 
     /*
@@ -1420,7 +1427,6 @@ ngx_ssl_ecdh_curve(ngx_conf_t *cf, ngx_ssl_t *ssl, ngx_str_t *name)
     SSL_CTX_set_tmp_ecdh(ssl->ctx, ecdh);
 
     EC_KEY_free(ecdh);
-#endif
 #endif
 #endif
 
@@ -3390,16 +3396,7 @@ ngx_ssl_new_session(ngx_ssl_conn_t *ssl_conn, ngx_ssl_session_t *sess)
         }
     }
 
-#if OPENSSL_VERSION_NUMBER >= 0x0090800fL
-
     session_id = (u_char *) SSL_SESSION_get_id(sess, &session_id_length);
-
-#else
-
-    session_id = sess->session_id;
-    session_id_length = sess->session_id_length;
-
-#endif
 
 #if (NGX_PTR_SIZE == 8)
 
@@ -3476,13 +3473,10 @@ ngx_ssl_get_cached_session(ngx_ssl_conn_t *ssl_conn,
 #endif
     u_char *id, int len, int *copy)
 {
-#if OPENSSL_VERSION_NUMBER >= 0x0090707fL
-    const
-#endif
-    u_char                   *p;
     size_t                    slen;
     uint32_t                  hash;
     ngx_int_t                 rc;
+    const u_char             *p;
     ngx_shm_zone_t           *shm_zone;
     ngx_slab_pool_t          *shpool;
     ngx_rbtree_node_t        *node, *sentinel;
@@ -3604,16 +3598,7 @@ ngx_ssl_remove_session(SSL_CTX *ssl, ngx_ssl_session_t *sess)
 
     cache = shm_zone->data;
 
-#if OPENSSL_VERSION_NUMBER >= 0x0090800fL
-
     id = (u_char *) SSL_SESSION_get_id(sess, &len);
-
-#else
-
-    id = sess->session_id;
-    len = sess->session_id_length;
-
-#endif
 
     hash = ngx_crc32_short(id, len);
 
@@ -4413,16 +4398,7 @@ ngx_ssl_get_session_id(ngx_connection_t *c, ngx_pool_t *pool, ngx_str_t *s)
         return NGX_OK;
     }
 
-#if OPENSSL_VERSION_NUMBER >= 0x0090800fL
-
     buf = (u_char *) SSL_SESSION_get_id(sess, &len);
-
-#else
-
-    buf = sess->session_id;
-    len = sess->session_id_length;
-
-#endif
 
     s->len = 2 * len;
     s->data = ngx_pnalloc(pool, 2 * len);
@@ -4648,6 +4624,7 @@ ngx_ssl_get_subject_dn(ngx_connection_t *c, ngx_pool_t *pool, ngx_str_t *s)
 
     name = X509_get_subject_name(cert);
     if (name == NULL) {
+        X509_free(cert);
         return NGX_ERROR;
     }
 
@@ -4699,6 +4676,7 @@ ngx_ssl_get_issuer_dn(ngx_connection_t *c, ngx_pool_t *pool, ngx_str_t *s)
 
     name = X509_get_issuer_name(cert);
     if (name == NULL) {
+        X509_free(cert);
         return NGX_ERROR;
     }
 
